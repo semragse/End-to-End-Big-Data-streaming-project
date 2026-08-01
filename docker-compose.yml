@@ -1,0 +1,158 @@
+services:
+  kafka:
+    image: apache/kafka:4.0.0
+    container_name: ecommerce-kafka
+    ports:
+      - "19092:29092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 1
+
+  postgres:
+    image: postgres:16
+    container_name: ecommerce-postgres
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ecommerce}
+      POSTGRES_USER: ${POSTGRES_USER:-ecommerce_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecommerce_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  adminer:
+    image: adminer:4
+    container_name: ecommerce-adminer
+    ports:
+      - "18080:8080"
+    depends_on:
+      - postgres
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: ecommerce-grafana
+    ports:
+      - "${GRAFANA_HOST_PORT:-13000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-ecommerce}
+      POSTGRES_USER: ${POSTGRES_USER:-ecommerce_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecommerce_password}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./dashboard/grafana/provisioning:/etc/grafana/provisioning
+      - ./dashboard/grafana/dashboards:/var/lib/grafana/dashboards
+    depends_on:
+      - postgres
+
+  airflow-init:
+    image: ecommerce-airflow:latest
+    container_name: ecommerce-airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-ecommerce_airflow_secret}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_INTERNAL_BOOTSTRAP_SERVERS:-kafka:19092}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-ecommerce_orders}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-ecommerce}
+      POSTGRES_USER: ${POSTGRES_USER:-ecommerce_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecommerce_password}
+    volumes:
+      - airflow_data:/opt/airflow
+      - ./airflow/dags:/opt/airflow/dags
+      - ./:/opt/airflow/project
+    command: bash -c "airflow db migrate && airflow users create --username ${AIRFLOW_ADMIN_USER:-admin} --password ${AIRFLOW_ADMIN_PASSWORD:-admin} --firstname Data --lastname Engineer --role Admin --email admin@example.com || true"
+
+  airflow-webserver:
+    image: ecommerce-airflow:latest
+    container_name: ecommerce-airflow-webserver
+    ports:
+      - "${AIRFLOW_HOST_PORT:-18081}:8080"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-ecommerce_airflow_secret}
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      API_URL: ${API_URL:-https://dummyjson.com/carts}
+      API_VERIFY_SSL: ${API_VERIFY_SSL:-true}
+      ALLOW_SAMPLE_FALLBACK: ${ALLOW_SAMPLE_FALLBACK:-false}
+      SAMPLE_ORDERS_PATH: ${SAMPLE_ORDERS_PATH:-data/sample_orders.json}
+      ORDER_LIMIT: ${ORDER_LIMIT:-10}
+      PRODUCER_RUNS: ${PRODUCER_RUNS:-1}
+      PRODUCER_SLEEP_SECONDS: ${PRODUCER_SLEEP_SECONDS:-0}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_INTERNAL_BOOTSTRAP_SERVERS:-kafka:19092}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-ecommerce_orders}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-ecommerce}
+      POSTGRES_USER: ${POSTGRES_USER:-ecommerce_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecommerce_password}
+      SPARK_CHECKPOINT_LOCATION: ${SPARK_CHECKPOINT_LOCATION:-/tmp/spark-checkpoints/ecommerce_orders}
+    volumes:
+      - airflow_data:/opt/airflow
+      - ./airflow/dags:/opt/airflow/dags
+      - ./:/opt/airflow/project
+    command: bash -c "airflow webserver"
+    depends_on:
+      - airflow-init
+      - kafka
+      - postgres
+
+  airflow-scheduler:
+    image: ecommerce-airflow:latest
+    container_name: ecommerce-airflow-scheduler
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-ecommerce_airflow_secret}
+      API_URL: ${API_URL:-https://dummyjson.com/carts}
+      API_VERIFY_SSL: ${API_VERIFY_SSL:-true}
+      ALLOW_SAMPLE_FALLBACK: ${ALLOW_SAMPLE_FALLBACK:-false}
+      SAMPLE_ORDERS_PATH: ${SAMPLE_ORDERS_PATH:-data/sample_orders.json}
+      ORDER_LIMIT: ${ORDER_LIMIT:-10}
+      PRODUCER_RUNS: ${PRODUCER_RUNS:-1}
+      PRODUCER_SLEEP_SECONDS: ${PRODUCER_SLEEP_SECONDS:-0}
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_INTERNAL_BOOTSTRAP_SERVERS:-kafka:19092}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-ecommerce_orders}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-ecommerce}
+      POSTGRES_USER: ${POSTGRES_USER:-ecommerce_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecommerce_password}
+      SPARK_CHECKPOINT_LOCATION: ${SPARK_CHECKPOINT_LOCATION:-/tmp/spark-checkpoints/ecommerce_orders}
+    volumes:
+      - airflow_data:/opt/airflow
+      - ./airflow/dags:/opt/airflow/dags
+      - ./:/opt/airflow/project
+    command: bash -c "airflow scheduler"
+    depends_on:
+      - airflow-init
+      - airflow-webserver
+      - kafka
+      - postgres
+
+volumes:
+  postgres_data:
+  grafana_data:
+  airflow_data:

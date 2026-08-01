@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS order_items (
+    kafka_topic VARCHAR(100) NOT NULL,
+    kafka_partition INTEGER NOT NULL,
+    kafka_offset BIGINT NOT NULL,
+    kafka_timestamp TIMESTAMP NOT NULL,
+    order_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    order_total NUMERIC(12, 2) NOT NULL,
+    order_discounted_total NUMERIC(12, 2) NOT NULL,
+    total_products INTEGER NOT NULL,
+    total_quantity INTEGER NOT NULL,
+    product_id INTEGER NOT NULL,
+    product_title TEXT NOT NULL,
+    product_price NUMERIC(12, 2) NOT NULL,
+    product_quantity INTEGER NOT NULL,
+    product_total NUMERIC(12, 2) NOT NULL,
+    product_discount_percentage NUMERIC(5, 2) NOT NULL,
+    product_discounted_total NUMERIC(12, 2) NOT NULL,
+    inserted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (kafka_partition, kafka_offset, product_id)
+);
