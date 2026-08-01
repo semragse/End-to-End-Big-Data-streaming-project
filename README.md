@@ -333,7 +333,7 @@ Kafka offsets are unique per partition. Using `(kafka_partition, kafka_offset, p
 
 **Saad-Eddine GARMES**
 - GitHub: [@semragse](https://github.com/semragse)
-- LinkedIn: [linkedin.com/in/saad-eddine-garmes](https://linkedin.com/in/saad-eddine-garmes)
+- LinkedIn: [linkedin.com/in/saad-eddine-garmes](https://www.linkedin.com/in/saad-garmes/)
 
 ---
 
