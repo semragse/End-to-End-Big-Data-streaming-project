@@ -1,145 +1,82 @@
-# Architecture Details
+# Architecture
 
-## Pipeline Layers
-
-### 1. Ingestion Layer — Python Producer
-
-**File:** `producer/producer.py`
-
-The producer fetches configurable batches of e-commerce cart data from the [DummyJSON](https://dummyjson.com) public REST API.
-Each cart contains nested product objects. The producer serializes each full cart as a single JSON message
-and publishes it to the Kafka topic configured by `KAFKA_TOPIC`.
+## Pipeline Overview
 
 ```
-DummyJSON /carts?limit=10
-    → fetch_orders()
-    → send_orders_to_kafka()
-    → Kafka topic: ecommerce_orders
+DummyJSON API
+    → Python Producer (infinite loop)
+    → Apache Kafka 4.0 — topic: ecommerce_orders
+    → Spark Structured Streaming (continuous)
+    → PostgreSQL 16 — table: order_items
+    → Grafana 11.1 — live KPI dashboard
 ```
 
-Key design choices:
-- Uses `confluent-kafka` (high-performance C-backed client) instead of `kafka-python` (pure Python, not maintained)
-- Uses normal TLS certificate verification for API calls
-- Supports repeated runs through `PRODUCER_RUNS` and `PRODUCER_SLEEP_SECONDS` for local stream simulation
-- `producer.flush()` ensures delivery before exit — important when run from Airflow
-- Exits with `sys.exit(1)` on API failure so Airflow marks the task as FAILED and stops the DAG
+Airflow is available for manual pipeline runs and ad-hoc triggering, but the core pipeline runs continuously as long-lived Docker services.
 
 ---
 
-### 2. Messaging Layer — Apache Kafka
+## Services
 
-**Image:** `apache/kafka:4.0.0`
+### Producer (`producer/`)
 
-Kafka 4.0 runs in **KRaft mode** (no ZooKeeper). A single broker handles both the broker and controller roles.
+Fetches e-commerce cart data from the DummyJSON REST API every `PRODUCER_SLEEP_SECONDS` seconds and publishes each cart as a JSON message to the Kafka topic.
 
-```
-KAFKA_PROCESS_ROLES: broker,controller
-KAFKA_LISTENERS: INTERNAL://:19092, EXTERNAL://:29092, CONTROLLER://:9093
-KAFKA_ADVERTISED_LISTENERS:
-    INTERNAL://kafka:19092   ← used by Spark/Airflow containers
-    EXTERNAL://localhost:19092  ← used by local Python scripts
-```
+- Uses `confluent-kafka` (C-backed, production-grade)
+- Runs as a Docker service with `restart: unless-stopped`
+- Retries on API or Kafka errors without crashing
 
-Why two listeners?
-- Containers use the internal Docker/Podman network (`kafka:19092`)
-- Local scripts on the host use `localhost:19092`
+### Kafka (Apache Kafka 4.0 KRaft)
 
----
+Single-broker cluster in KRaft mode — no ZooKeeper required. Two listeners:
+- `INTERNAL://kafka:19092` — used by containers
+- `EXTERNAL://localhost:19092` — used by local tooling
 
-### 3. Processing Layer — Spark Structured Streaming
+### Spark Structured Streaming (`spark/`)
 
-**File:** `spark/streaming_job.py`
-
-Spark reads all available Kafka messages, transforms nested JSON, and writes to PostgreSQL.
-
-```
-Kafka topic
-    → readStream.format("kafka")
-    → cast value to string
-    → from_json(ORDER_SCHEMA)
-    → explode(order.products)
-    → foreachBatch(write_batch_to_postgres)
-```
+Reads from Kafka continuously (`trigger(processingTime="10 seconds")`), parses nested JSON, explodes the product array into individual rows, and writes to PostgreSQL via `foreachBatch`.
 
 Key transformations:
-1. `from_json` parses the raw Kafka `value` string into a structured `StructType`
-2. `explode(order.products)` turns one order row into N product rows (one per product)
-3. `where(col("order.id").isNotNull())` filters non-DummyJSON messages
-4. `checkpointLocation` stores progress metadata for scheduled Spark runs
-5. `trigger(availableNow=True)` processes all current messages and exits (not a continuous stream)
+- `from_json(ORDER_SCHEMA)` — deserializes Kafka messages into typed columns
+- `explode(order.products)` — one order → N rows (one per product)
+- `ON CONFLICT DO NOTHING` — idempotent writes keyed on `(kafka_partition, kafka_offset, product_id)`
+- Checkpoint directory persists Kafka offsets across restarts
+
+### PostgreSQL 16
+
+Stores one row per product per order. Schema in `postgres/init.sql`.
+
+Primary key: `(kafka_partition, kafka_offset, product_id)` — guarantees exactly-once semantics without Kafka transactions.
+
+### Grafana 11.1
+
+Auto-provisioned at startup from config files in `dashboard/grafana/provisioning/`. No manual setup required. Connects directly to PostgreSQL.
+
+### Airflow 2.9.3
+
+Custom image (`airflow/Dockerfile`) with Java 17 + PySpark baked in. Used for manual pipeline triggering and monitoring. The DAG `ecommerce_streaming_pipeline` runs the producer then the Spark job sequentially.
 
 ---
 
-### 4. Storage Layer — PostgreSQL
+## Startup Order
 
-**Image:** `postgres:16`
-
-The `order_items` table stores one row per product per Kafka message.
-
-Primary key: `(kafka_partition, kafka_offset, product_id)`
-
-This composite key guarantees **idempotency**:
-- Same Kafka offset + same product → duplicate is silently ignored
-- Safe to re-run the Spark job multiple times without creating duplicates
+```
+kafka + postgres
+    → adminer, grafana, producer, spark (after kafka/postgres healthy)
+    → airflow-init (db migrate + user create)
+    → airflow-webserver
+    → airflow-scheduler
+```
 
 ---
 
-### 5. Visualization Layer — Grafana
+## Key Design Decisions
 
-**Image:** `grafana/grafana:11.1.0`
+**KRaft mode** — Kafka 4.0 dropped ZooKeeper. Simpler single-container setup.
 
-Grafana is **fully auto-provisioned** at startup via volume mounts:
+**`trigger(processingTime="10 seconds")`** — Spark processes new Kafka messages every 10 seconds and stays running, unlike `availableNow` which exits after one pass.
 
-```
-dashboard/grafana/provisioning/datasources/postgres.yml   → declares PostgreSQL datasource
-dashboard/grafana/provisioning/dashboards/dashboards.yml  → tells Grafana where to load JSON
-dashboard/grafana/dashboards/ecommerce-streaming.json     → the dashboard definition
-```
+**Composite primary key as idempotency key** — Re-running or restarting Spark never creates duplicate rows.
 
-No manual setup needed — the dashboard is available immediately after `podman-compose up`.
+**Local Spark Kafka JARs** — Copied from `jars/` into the Spark container image at build time, avoiding Maven downloads at runtime.
 
----
-
-### 6. Orchestration Layer — Apache Airflow
-
-**Image:** Custom `ecommerce-airflow:latest` (see `airflow/Dockerfile`)
-
-The custom image extends `apache/airflow:2.9.3-python3.11` with:
-- `openjdk-17-jre-headless` — required by PySpark / `spark-submit`
-- All Python dependencies from `requirements.txt` (PySpark, psycopg2, confluent-kafka, requests)
-
-The DAG `ecommerce_streaming_pipeline` runs two tasks:
-
-```
-produce_order_to_kafka
-    BashOperator: python producer/producer.py
-    env: KAFKA_BOOTSTRAP_SERVERS=kafka:19092
-
-    ↓ (only if success)
-
-transform_and_write_to_postgres
-    BashOperator: spark-submit --packages ... spark/streaming_job.py
-    env: KAFKA_BOOTSTRAP_SERVERS=kafka:19092, POSTGRES_HOST=postgres
-```
-
-`append_env=True` is required on both operators so that the container PATH
-(including `/home/airflow/.local/bin` where `spark-submit` lives) is preserved.
-
----
-
-### 7. Infrastructure — Podman Compose
-
-All services are defined in `docker-compose.yml` (compatible with both Docker and Podman Compose).
-
-Startup order:
-```
-kafka + postgres (start immediately)
-    → adminer, grafana (depend on postgres)
-    → airflow-init (depends on kafka + postgres, runs db migrate + user create)
-    → airflow-webserver (depends on airflow-init)
-    → airflow-scheduler (depends on airflow-webserver)
-```
-
-The `airflow-init` service solves the SQLite concurrent-migration race condition:
-it runs `airflow db migrate` once before webserver and scheduler start,
-preventing both from trying to initialize the metadata DB simultaneously.
+**`restart: unless-stopped`** — Producer and Spark recover automatically from transient failures.

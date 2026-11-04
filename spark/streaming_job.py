@@ -1,8 +1,3 @@
-"""Clean Kafka order messages and write them to PostgreSQL.
-
-Mini-projet 08: Kafka topic -> Spark transformation -> PostgreSQL
-"""
-
 import os
 
 import psycopg2
@@ -16,7 +11,7 @@ TOPIC_NAME = os.getenv("KAFKA_TOPIC", "ecommerce_orders")
 CHECKPOINT_LOCATION = os.getenv("SPARK_CHECKPOINT_LOCATION", "/tmp/spark-checkpoints/ecommerce_orders")
 POSTGRES_CONFIG = {
     "host": os.getenv("POSTGRES_HOST", "localhost"),
-    "port": int(os.getenv("POSTGRES_PORT", "5433")),
+    "port": int(os.getenv("POSTGRES_PORT", "5432")),
     "dbname": os.getenv("POSTGRES_DB", "ecommerce"),
     "user": os.getenv("POSTGRES_USER", "ecommerce_user"),
     "password": os.getenv("POSTGRES_PASSWORD", "ecommerce_password"),
@@ -42,34 +37,29 @@ POSTGRES_COLUMNS = [
     "product_discounted_total",
 ]
 
-PRODUCT_SCHEMA = StructType(
-    [
-        StructField("id", IntegerType()),
-        StructField("title", StringType()),
-        StructField("price", DoubleType()),
-        StructField("quantity", IntegerType()),
-        StructField("total", DoubleType()),
-        StructField("discountPercentage", DoubleType()),
-        StructField("discountedTotal", DoubleType()),
-        StructField("thumbnail", StringType()),
-    ]
-)
+PRODUCT_SCHEMA = StructType([
+    StructField("id", IntegerType()),
+    StructField("title", StringType()),
+    StructField("price", DoubleType()),
+    StructField("quantity", IntegerType()),
+    StructField("total", DoubleType()),
+    StructField("discountPercentage", DoubleType()),
+    StructField("discountedTotal", DoubleType()),
+    StructField("thumbnail", StringType()),
+])
 
-ORDER_SCHEMA = StructType(
-    [
-        StructField("id", IntegerType()),
-        StructField("products", ArrayType(PRODUCT_SCHEMA)),
-        StructField("total", DoubleType()),
-        StructField("discountedTotal", DoubleType()),
-        StructField("userId", IntegerType()),
-        StructField("totalProducts", IntegerType()),
-        StructField("totalQuantity", IntegerType()),
-    ]
-)
+ORDER_SCHEMA = StructType([
+    StructField("id", IntegerType()),
+    StructField("products", ArrayType(PRODUCT_SCHEMA)),
+    StructField("total", DoubleType()),
+    StructField("discountedTotal", DoubleType()),
+    StructField("userId", IntegerType()),
+    StructField("totalProducts", IntegerType()),
+    StructField("totalQuantity", IntegerType()),
+])
 
 
 def create_spark_session():
-    """Create the Spark session used by the streaming job."""
     return (
         SparkSession.builder.appName("EcommerceKafkaStreaming")
         .config("spark.sql.shuffle.partitions", "1")
@@ -78,19 +68,17 @@ def create_spark_session():
 
 
 def read_orders_from_kafka(spark):
-    """Create a streaming DataFrame that reads raw messages from Kafka."""
     return (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", BOOTSTRAP_SERVERS)
         .option("subscribe", TOPIC_NAME)
-        .option("startingOffsets", "earliest")
+        .option("startingOffsets", "latest")
         .load()
     )
 
 
-def select_readable_columns(kafka_dataframe):
-    """Convert Kafka bytes into readable string columns."""
-    return kafka_dataframe.select(
+def transform_orders(kafka_df):
+    readable = kafka_df.select(
         col("topic"),
         col("partition"),
         col("offset"),
@@ -98,20 +86,15 @@ def select_readable_columns(kafka_dataframe):
         col("value").cast("string").alias("message"),
     )
 
-
-def transform_orders(readable_orders):
-    """Parse JSON orders and create one clean row per product."""
-    parsed_orders = readable_orders.select(
+    parsed = readable.select(
         col("topic"),
         col("partition"),
         col("offset"),
         col("timestamp").alias("kafka_timestamp"),
         from_json(col("message"), ORDER_SCHEMA).alias("order"),
-    )
+    ).where(col("order.id").isNotNull())
 
-    valid_orders = parsed_orders.where(col("order.id").isNotNull())
-
-    return valid_orders.select(
+    return parsed.select(
         col("topic").alias("kafka_topic"),
         col("partition").alias("kafka_partition"),
         col("offset").alias("kafka_offset"),
@@ -144,12 +127,10 @@ def transform_orders(readable_orders):
     )
 
 
-def write_batch_to_postgres(batch_dataframe, batch_id):
-    """Insert one Spark micro-batch into PostgreSQL."""
-    rows = [tuple(row[column] for column in POSTGRES_COLUMNS) for row in batch_dataframe.toLocalIterator()]
+def write_batch_to_postgres(batch_df, batch_id):
+    rows = [tuple(row[col] for col in POSTGRES_COLUMNS) for row in batch_df.toLocalIterator()]
 
     if not rows:
-        print(f"Batch {batch_id}: no rows to write")
         return
 
     columns_sql = ", ".join(POSTGRES_COLUMNS)
@@ -159,32 +140,30 @@ def write_batch_to_postgres(batch_dataframe, batch_id):
         ON CONFLICT (kafka_partition, kafka_offset, product_id) DO NOTHING
     """
 
-    with psycopg2.connect(**POSTGRES_CONFIG) as connection:
-        with connection.cursor() as cursor:
-            execute_values(cursor, insert_sql, rows)
+    with psycopg2.connect(**POSTGRES_CONFIG) as conn:
+        with conn.cursor() as cur:
+            execute_values(cur, insert_sql, rows)
 
     print(f"Batch {batch_id}: wrote {len(rows)} rows to PostgreSQL")
 
 
 def main():
-    """Start the Spark streaming query and write transformed orders to PostgreSQL."""
     spark = create_spark_session()
     spark.sparkContext.setLogLevel("WARN")
 
-    kafka_dataframe = read_orders_from_kafka(spark)
-    readable_orders = select_readable_columns(kafka_dataframe)
-    transformed_orders = transform_orders(readable_orders)
+    kafka_df = read_orders_from_kafka(spark)
+    transformed = transform_orders(kafka_df)
 
     query = (
-        transformed_orders.writeStream.foreachBatch(write_batch_to_postgres)
+        transformed.writeStream
+        .foreachBatch(write_batch_to_postgres)
         .outputMode("append")
         .option("checkpointLocation", CHECKPOINT_LOCATION)
-        .trigger(availableNow=True)
+        .trigger(processingTime="10 seconds")
         .start()
     )
 
     query.awaitTermination()
-    spark.stop()
 
 
 if __name__ == "__main__":

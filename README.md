@@ -1,4 +1,4 @@
-# 🛒 E-Commerce Real-Time Streaming Pipeline
+# E-Commerce Real-Time Streaming Pipeline
 
 ![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)
 ![Apache Kafka](https://img.shields.io/badge/Apache%20Kafka-4.0.0-black?logo=apachekafka)
@@ -6,73 +6,67 @@
 ![Apache Airflow](https://img.shields.io/badge/Apache%20Airflow-2.9.3-lightblue?logo=apacheairflow)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-blue?logo=postgresql)
 ![Grafana](https://img.shields.io/badge/Grafana-11.1.0-orange?logo=grafana)
-![Podman](https://img.shields.io/badge/Podman-Compose-purple?logo=podman)
+![Docker](https://img.shields.io/badge/Docker-Compose-blue?logo=docker)
 
-A portfolio-ready **Big Data streaming pipeline** that simulates real-time e-commerce order processing — from REST API ingestion to live dashboards, fully containerized and orchestrated with Apache Airflow.
+End-to-end streaming pipeline for real-time e-commerce order processing. A Python producer continuously fetches orders from a REST API and publishes them to Kafka. Spark Structured Streaming consumes those events, transforms the nested JSON, and writes to PostgreSQL. Grafana displays live KPIs as data arrives. Everything runs as long-lived Docker services — no manual triggering required.
 
 ---
 
-## 📐 Architecture
+## Architecture
 
 ```mermaid
 flowchart LR
     subgraph Ingestion
-        A[🌐 DummyJSON API\nREST e-commerce data] -->|HTTP GET| B[🐍 Python Producer\nconfluent-kafka]
+        A[DummyJSON API] -->|HTTP GET every 5s| B[Python Producer\nconfluent-kafka]
     end
 
     subgraph Messaging
-        B -->|JSON messages| C[📨 Apache Kafka 4.0\nTopic: ecommerce_orders]
+        B -->|JSON messages| C[Apache Kafka 4.0\nTopic: ecommerce_orders]
     end
 
     subgraph Processing
-        C -->|Structured Streaming| D[⚡ Spark Structured Streaming\nPySpark 3.5.1\nfrom_json · explode · foreachBatch]
+        C -->|Structured Streaming| D[Spark Structured Streaming\nfrom_json · explode · foreachBatch]
     end
 
     subgraph Storage
-        D -->|Transformed rows\nON CONFLICT DO NOTHING| E[(🐘 PostgreSQL 16\norder_items table)]
+        D -->|ON CONFLICT DO NOTHING| E[(PostgreSQL 16\norder_items)]
     end
 
     subgraph Visualization
-        E --> F[📊 Grafana 11.1\nLive KPI Dashboard]
-        E --> G[🔍 Adminer\nSQL Explorer]
+        E --> F[Grafana 11.1\nLive KPI Dashboard]
+        E --> G[Adminer\nSQL Explorer]
     end
 
     subgraph Orchestration
-        H[🌀 Apache Airflow 2.9.3\nDAG: ecommerce_streaming_pipeline] -.->|triggers| B
-        H -.->|triggers| D
+        H[Apache Airflow 2.9.3\nManual trigger] -.->|on demand| B
+        H -.->|on demand| D
     end
 ```
 
-### Data Flow
-
 | Layer | Component | Role |
 |---|---|---|
-| **Ingestion** | Python + DummyJSON API | Fetch configurable batches of e-commerce carts and publish them to Kafka |
-| **Messaging** | Apache Kafka 4.0 (KRaft) | Decouple producer from consumer, buffer events |
-| **Processing** | Spark Structured Streaming | Parse nested JSON, explode product arrays, deduplicate |
-| **Storage** | PostgreSQL 16 | Persist transformed order items with Kafka metadata |
-| **Visualization** | Grafana 11.1 | Live KPIs: orders, products, revenue, discounts |
-| **Orchestration** | Apache Airflow 2.9.3 | Schedule and automate the end-to-end pipeline |
-| **Infrastructure** | Podman Compose | Containerize all services locally |
+| **Ingestion** | Python Producer | Continuously fetches carts from DummyJSON API and publishes to Kafka |
+| **Messaging** | Apache Kafka 4.0 (KRaft) | Decouples producer from Spark, buffers events |
+| **Processing** | Spark Structured Streaming | Parses nested JSON, explodes product arrays, writes to PostgreSQL |
+| **Storage** | PostgreSQL 16 | Persists order items with idempotent writes |
+| **Visualization** | Grafana 11.1 | Live KPIs: orders, revenue, product breakdown |
+| **Orchestration** | Apache Airflow 2.9.3 | Manual pipeline triggering and monitoring |
+| **Infrastructure** | Docker Compose | Containerizes all services |
 
 ---
 
-## ✨ Features
+## How It Works
 
-- **Configurable ingestion** of multiple e-commerce carts from DummyJSON REST API
-- **Event streaming** via Apache Kafka with KRaft mode (no ZooKeeper)
-- **Spark Structured Streaming** with `from_json`, `explode`, and `foreachBatch` for nested JSON transformation
-- **Idempotent writes** to PostgreSQL using `ON CONFLICT (kafka_partition, kafka_offset, product_id) DO NOTHING`
-- **Checkpointed Spark runs** so scheduled executions can continue from the last processed Kafka offsets
-- **Live Grafana dashboard** with auto-provisioned datasource and panels (orders, revenue, product breakdown)
-- **Fully automated pipeline** orchestrated with Apache Airflow DAG
-- **Environment-driven configuration** through `.env.example`
-- **Executable validation** with unit tests and a PostgreSQL output validation script
-- **Fully containerized** with Podman Compose (Kafka, PostgreSQL, Grafana, Airflow, Adminer)
+The pipeline runs continuously without any manual intervention:
+
+1. The **producer** container fetches 10 e-commerce carts from the DummyJSON API every 5 seconds and publishes each cart as a JSON message to the `ecommerce_orders` Kafka topic.
+2. The **Spark** container reads from that topic every 10 seconds, parses the nested JSON (each cart contains multiple products), explodes the product array into individual rows, and writes them to PostgreSQL — skipping duplicates via `ON CONFLICT DO NOTHING`.
+3. **Grafana** queries PostgreSQL and refreshes the dashboard in real time.
+4. **Airflow** is available for manual ad-hoc runs and pipeline monitoring via its UI.
 
 ---
 
-## 🛠️ Tech Stack
+## Tech Stack
 
 | Category | Technology | Version |
 |---|---|---|
@@ -83,90 +77,84 @@ flowchart LR
 | Database | PostgreSQL | 16 |
 | Visualization | Grafana | 11.1.0 |
 | DB Explorer | Adminer | 4 |
-| Container Runtime | Podman Compose | — |
+| Container Runtime | Docker Compose | — |
 | Kafka Client | confluent-kafka | 2.6.1 |
 | PostgreSQL Driver | psycopg2-binary | 2.9.9 |
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 ecommerce-streaming-pipeline/
 ├── producer/
-│   └── producer.py              # API → Kafka producer (confluent-kafka)
-├── consumer/
-│   └── consumer.py              # Educational Kafka consumer
+│   ├── producer.py              # Continuous API → Kafka producer (infinite loop)
+│   └── Dockerfile
 ├── spark/
-│   └── streaming_job.py         # Spark Structured Streaming job
+│   ├── streaming_job.py         # Spark Structured Streaming job (continuous)
+│   └── Dockerfile
 ├── airflow/
-│   ├── Dockerfile               # Custom Airflow image (Java + PySpark)
+│   ├── Dockerfile               # Custom image (Java 17 + PySpark)
 │   └── dags/
-│       └── ecommerce_streaming_pipeline.py   # Airflow DAG
+│       └── ecommerce_streaming_pipeline.py
 ├── postgres/
-│   └── init.sql                 # PostgreSQL schema (order_items table)
+│   └── init.sql                 # Schema: order_items table
 ├── dashboard/
 │   └── grafana/
-│       ├── provisioning/
-│       │   ├── datasources/     # Auto-configured PostgreSQL datasource
-│       │   └── dashboards/      # Dashboard loader config
+│       ├── provisioning/        # Auto-configured datasource + loader
 │       └── dashboards/
-│           └── ecommerce-streaming.json      # Pre-built Grafana dashboard
+│           └── ecommerce-streaming.json
+├── jars/                        # Spark Kafka connector JARs (bundled at build time)
 ├── docs/
-│   └── ARCHITECTURE.md          # Detailed architecture documentation
-├── docker-compose.yml           # Full stack: Kafka, Postgres, Grafana, Airflow
-├── .env.example                 # Environment variables template
-├── Makefile                     # Developer shortcuts
-└── requirements.txt             # Python dependencies
+│   └── ARCHITECTURE.md
+├── docker-compose.yml
+├── .env.example
+└── Makefile
 ```
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
-- [Podman](https://podman.io/getting-started/installation) + `podman-compose`
-- Python 3.11
+- Docker + Docker Compose
 - Git
 
-### 1. Clone the repository
+### 1. Clone
 
 ```bash
 git clone https://github.com/semragse/End-to-End-Big-Data-streaming-project.git
 cd End-to-End-Big-Data-streaming-project
 ```
 
-### 2. Configure environment variables
+### 2. Configure
 
 ```bash
 cp .env.example .env
-# Edit .env if needed (defaults work out of the box)
 ```
 
-If your local network injects a self-signed HTTPS certificate and the producer fails with `CERTIFICATE_VERIFY_FAILED`, set `API_VERIFY_SSL=false` in `.env` for the local demo run. If DummyJSON is temporarily unavailable, set `ALLOW_SAMPLE_FALLBACK=true` to publish the included sample orders from `data/sample_orders.json`.
-
-### 3. Build the Airflow image
+### 3. Build images
 
 ```bash
-podman build -t ecommerce-airflow:latest ./airflow
+docker compose build
 ```
 
-### 4. Start all services
+### 4. Start the stack
 
 ```bash
-podman-compose up -d
-# Or: make up
+docker compose up -d
 ```
 
-### 5. Initialize Airflow
+The producer and Spark streaming job start automatically and run continuously.
+
+### 5. Initialize Airflow (optional — for manual triggering)
 
 ```bash
-podman-compose up airflow-init
-# Or: make airflow-init
+docker compose up airflow-init
 ```
 
-### 6. Access the dashboards
+### 6. Access services
 
 | Service | URL | Credentials |
 |---|---|---|
@@ -174,44 +162,50 @@ podman-compose up airflow-init
 | Airflow | http://localhost:18081 | admin / admin |
 | Adminer | http://localhost:18080 | ecommerce_user / ecommerce_password |
 
-### 7. Trigger the pipeline
+---
 
-Option A — via Airflow UI:
-1. Open http://localhost:18081
-2. Find `ecommerce_streaming_pipeline` DAG
-3. Click the **▶ Trigger** button
+## Verifying the Pipeline
 
-Option B — via CLI:
+**Watch the producer send messages to Kafka:**
 ```bash
-make trigger
-# or
-podman exec ecommerce-airflow-webserver airflow dags trigger ecommerce_streaming_pipeline
+docker logs ecommerce-producer -f
 ```
 
-### 8. Validate the result
-
+**Watch Spark process batches:**
 ```bash
-make test      # Unit tests for producer API parsing
-make validate  # Checks that PostgreSQL contains transformed order items
+docker logs ecommerce-spark -f
 ```
 
-`make validate` expects the pipeline to have already written data to PostgreSQL.
+**Count rows growing in PostgreSQL:**
+```bash
+docker exec ecommerce-postgres psql -U ecommerce_user -d ecommerce \
+  -c "SELECT COUNT(*), MAX(inserted_at) FROM order_items;"
+```
+Run twice 10 seconds apart — the count must increase.
+
+**See raw Kafka messages:**
+```bash
+docker exec ecommerce-kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:19092 \
+  --topic ecommerce_orders \
+  --from-beginning
+```
 
 ---
 
-## 🖥️ Services & Ports
+## Services & Ports
 
-| Service | Container Port | Host Port |
-|---|---|---|
-| Apache Kafka | 29092 | 19092 |
-| PostgreSQL | 5432 | 5433 |
-| Grafana | 3000 | 13000 |
-| Airflow Webserver | 8080 | 18081 |
-| Adminer | 8080 | 18080 |
+| Service | Host Port |
+|---|---|
+| Apache Kafka | 19092 |
+| PostgreSQL | 5433 |
+| Grafana | 13000 |
+| Airflow Webserver | 18081 |
+| Adminer | 18080 |
 
 ---
 
-## 🗃️ Database Schema
+## Database Schema
 
 ```sql
 CREATE TABLE order_items (
@@ -239,104 +233,51 @@ CREATE TABLE order_items (
 
 ---
 
-## 📊 Grafana Dashboard
-
-The Grafana dashboard is **auto-provisioned** on startup with:
-
-- **Orders table** — full list of ingested order items
-- **Product totals** — revenue per product
-- **Total order items** — KPI counter
-- **Gross sales** — total revenue metric
-
-Dashboard JSON: `dashboard/grafana/dashboards/ecommerce-streaming.json`
-
-![Grafana dashboard](screenshots/grafana-dashboard.png)
-
----
-
-## 🌀 Airflow Run Evidence
-
-The Airflow DAG runs the producer first, then launches the Spark transformation job.
-
-![Airflow DAG success](screenshots/airflow-dag-success.png)
-
----
-
-## ⚙️ Airflow DAG
-
-The `ecommerce_streaming_pipeline` DAG runs two tasks sequentially:
-
-```
-produce_order_to_kafka  ──►  transform_and_write_to_postgres
-```
-
-| Task | Description |
-|---|---|
-| `produce_order_to_kafka` | Calls DummyJSON API and publishes cart to Kafka topic `ecommerce_orders` |
-| `transform_and_write_to_postgres` | Runs `spark-submit` to read Kafka, transform, and write to PostgreSQL |
-
-Environment variables are injected by Airflow: `KAFKA_BOOTSTRAP_SERVERS=kafka:19092`, `POSTGRES_HOST=postgres`.
-
----
-
-## 🔧 Makefile Commands
+## Makefile Commands
 
 ```bash
-make up           # Start all services (podman-compose up -d)
-make down         # Stop all services
-make airflow-init # Initialize Airflow DB and create admin user
-make trigger      # Trigger the Airflow DAG
-make logs-spark   # Tail Spark task logs in Airflow
-make psql         # Open PostgreSQL interactive shell
-make count        # Count rows in order_items table
-make test         # Run unit tests
-make validate     # Validate PostgreSQL pipeline output
-make clean        # Stop services and remove volumes
+make up              # Start all services
+make down            # Stop all services
+make build           # Build producer and spark images
+make restart         # Restart full stack
+make logs-producer   # Tail producer logs
+make logs-spark      # Tail Spark logs
+make psql            # Open PostgreSQL shell
+make count           # Count rows in order_items
+make query           # Show latest 10 order items
+make kafka-topics    # List Kafka topics
+make airflow-init    # Initialize Airflow DB
+make trigger         # Manually trigger Airflow DAG
+make clean           # Stop and remove all volumes
+make status          # Show running containers
 ```
 
 ---
 
-## 🔑 Key Design Decisions
+## Key Design Decisions
 
-**Why Kafka KRaft (no ZooKeeper)?**
-Kafka 4.0 dropped ZooKeeper support. KRaft mode simplifies the setup — no separate ZooKeeper container needed.
+**Continuous streaming over batch triggers** — `trigger(processingTime="10 seconds")` keeps Spark running indefinitely, processing new messages as they arrive. The previous `availableNow` trigger exited after one pass and required Airflow to restart it.
 
-**Why `trigger(availableNow=True)` in Spark?**
-Instead of a continuous streaming job running forever, `availableNow` reads all available Kafka messages at trigger time and exits — ideal for batch-like scheduled runs via Airflow.
+**KRaft mode (no ZooKeeper)** — Kafka 4.0 dropped ZooKeeper. Single broker handles both broker and controller roles — simpler setup, one fewer container.
 
-**Why Spark checkpointing?**
-The checkpoint directory stores streaming progress metadata. On the next scheduled run, Spark can continue from the last committed Kafka offsets instead of treating every execution like a brand-new stream.
-For the local container demo, checkpoints are written under `/tmp/spark-checkpoints` to avoid Windows-mounted volume permission issues.
+**Idempotent writes via composite primary key** — `(kafka_partition, kafka_offset, product_id)` as the primary key means restarting Spark or replaying Kafka offsets never creates duplicate rows.
 
-**Why local Spark Kafka JARs?**
-The Airflow DAG uses the JAR files in `jars/` instead of downloading Spark Kafka dependencies at runtime. This keeps the demo reliable on networks where Java cannot validate Maven HTTPS certificates.
+**Local Spark Kafka JARs** — Kafka connector JARs are bundled into the Spark image at build time (`jars/`), avoiding Maven downloads at runtime.
 
-**Why `ON CONFLICT DO NOTHING` in PostgreSQL?**
-Kafka offsets are unique per partition. Using `(kafka_partition, kafka_offset, product_id)` as primary key makes writes naturally idempotent — safe to re-run the pipeline multiple times.
+**`restart: unless-stopped`** — Producer and Spark recover automatically from transient failures (API timeouts, Kafka restarts) without manual intervention.
 
-**Why Airflow `append_env=True`?**
-`BashOperator` with `env=` replaces the entire environment, losing PATH. `append_env=True` merges our variables with the existing environment, ensuring `spark-submit` is found.
+**Airflow for manual control** — The pipeline runs independently of Airflow. Airflow is used to trigger ad-hoc runs, inspect task history, and demonstrate orchestration capability.
 
 ---
 
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Commit your changes (`git commit -m 'Add my feature'`)
-4. Push to the branch (`git push origin feature/my-feature`)
-5. Open a Pull Request
-
----
-
-## 👤 Author
+## Author
 
 **Saad-Eddine GARMES**
 - GitHub: [@semragse](https://github.com/semragse)
-- LinkedIn: [linkedin.com/in/saad-eddine-garmes](https://www.linkedin.com/in/saad-garmes/)
+- LinkedIn: [linkedin.com/in/saad-garmes](https://www.linkedin.com/in/saad-garmes/)
 
 ---
 
-## 📄 License
+## License
 
-This project is licensed under the MIT License.
+MIT License

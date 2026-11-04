@@ -17,6 +17,7 @@ build/
 postgres_data/
 grafana_data/
 airflow_data/
+Mine.txt
 
 # Spark
 spark-warehouse/

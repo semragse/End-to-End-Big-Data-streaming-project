@@ -1,4 +1,7 @@
 services:
+
+  # ─── Infrastructure ────────────────────────────────────────────────────────
+
   kafka:
     image: apache/kafka:4.0.0
     container_name: ecommerce-kafka
@@ -32,6 +35,10 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ecommerce_user} -d ${POSTGRES_DB:-ecommerce}"]
+      interval: 10s
+      retries: 5
 
   adminer:
     image: adminer:4
@@ -61,7 +68,51 @@ services:
     depends_on:
       - postgres
 
+  # ─── Streaming Pipeline ────────────────────────────────────────────────────
+
+  producer:
+    build:
+      context: .
+      dockerfile: producer/Dockerfile
+    container_name: ecommerce-producer
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-ecommerce_orders}
+      API_URL: ${API_URL:-https://dummyjson.com/carts}
+      API_VERIFY_SSL: ${API_VERIFY_SSL:-true}
+      ORDER_LIMIT: ${ORDER_LIMIT:-10}
+      PRODUCER_SLEEP_SECONDS: ${PRODUCER_SLEEP_SECONDS:-5}
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
+  spark:
+    build:
+      context: .
+      dockerfile: spark/Dockerfile
+    container_name: ecommerce-spark
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-ecommerce_orders}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-ecommerce}
+      POSTGRES_USER: ${POSTGRES_USER:-ecommerce_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ecommerce_password}
+      SPARK_CHECKPOINT_LOCATION: ${SPARK_CHECKPOINT_LOCATION:-/tmp/spark-checkpoints/ecommerce_orders}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    restart: unless-stopped
+
+  # ─── Orchestration (manual trigger) ───────────────────────────────────────
+
   airflow-init:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
     image: ecommerce-airflow:latest
     container_name: ecommerce-airflow-init
     environment:
@@ -69,7 +120,7 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-ecommerce_airflow_secret}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_INTERNAL_BOOTSTRAP_SERVERS:-kafka:19092}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       KAFKA_TOPIC: ${KAFKA_TOPIC:-ecommerce_orders}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
@@ -80,7 +131,13 @@ services:
       - airflow_data:/opt/airflow
       - ./airflow/dags:/opt/airflow/dags
       - ./:/opt/airflow/project
-    command: bash -c "airflow db migrate && airflow users create --username ${AIRFLOW_ADMIN_USER:-admin} --password ${AIRFLOW_ADMIN_PASSWORD:-admin} --firstname Data --lastname Engineer --role Admin --email admin@example.com || true"
+    command: >
+      bash -c "airflow db migrate &&
+               airflow users create
+                 --username ${AIRFLOW_ADMIN_USER:-admin}
+                 --password ${AIRFLOW_ADMIN_PASSWORD:-admin}
+                 --firstname Data --lastname Engineer
+                 --role Admin --email admin@example.com || true"
 
   airflow-webserver:
     image: ecommerce-airflow:latest
@@ -95,12 +152,9 @@ services:
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
       API_URL: ${API_URL:-https://dummyjson.com/carts}
       API_VERIFY_SSL: ${API_VERIFY_SSL:-true}
-      ALLOW_SAMPLE_FALLBACK: ${ALLOW_SAMPLE_FALLBACK:-false}
-      SAMPLE_ORDERS_PATH: ${SAMPLE_ORDERS_PATH:-data/sample_orders.json}
       ORDER_LIMIT: ${ORDER_LIMIT:-10}
-      PRODUCER_RUNS: ${PRODUCER_RUNS:-1}
-      PRODUCER_SLEEP_SECONDS: ${PRODUCER_SLEEP_SECONDS:-0}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_INTERNAL_BOOTSTRAP_SERVERS:-kafka:19092}
+      PRODUCER_SLEEP_SECONDS: ${PRODUCER_SLEEP_SECONDS:-5}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       KAFKA_TOPIC: ${KAFKA_TOPIC:-ecommerce_orders}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
@@ -128,12 +182,9 @@ services:
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-ecommerce_airflow_secret}
       API_URL: ${API_URL:-https://dummyjson.com/carts}
       API_VERIFY_SSL: ${API_VERIFY_SSL:-true}
-      ALLOW_SAMPLE_FALLBACK: ${ALLOW_SAMPLE_FALLBACK:-false}
-      SAMPLE_ORDERS_PATH: ${SAMPLE_ORDERS_PATH:-data/sample_orders.json}
       ORDER_LIMIT: ${ORDER_LIMIT:-10}
-      PRODUCER_RUNS: ${PRODUCER_RUNS:-1}
-      PRODUCER_SLEEP_SECONDS: ${PRODUCER_SLEEP_SECONDS:-0}
-      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_INTERNAL_BOOTSTRAP_SERVERS:-kafka:19092}
+      PRODUCER_SLEEP_SECONDS: ${PRODUCER_SLEEP_SECONDS:-5}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       KAFKA_TOPIC: ${KAFKA_TOPIC:-ecommerce_orders}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
